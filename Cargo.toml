@@ -1,0 +1,19 @@
+[package]
+name = "benthic_asset_pipeline"
+version = "0.0.0"
+edition = "2024"
+
+[build-dependencies]
+#benthic_default_assets = { git = "https://github.com/benthic-mmo/benthic_default_assets.git", tag = "v0.0.0" }
+benthic_default_assets = { path = "../benthic_default_assets/"}
+gltf = "1.4.1"
+glam = "0.32.1"
+uuid = "1.22.0"
+indexmap = "2.13.0"
+bvh_anim = "0.4.0"
+bytemuck = "1.25.0"
+
+[dependencies]
+serde = "1.0.228"
+strum_macros = "0.28.0"
+uuid = "1.22.0"
