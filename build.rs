@@ -19,109 +19,115 @@ struct JointBuffers {
 }
 
 fn main() {
+    let gen_animations = std::env::var("CARGO_FEATURE_GENERATE_ANIMATIONS").is_ok();
+
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
     let base_skeleton_path = benthic_default_assets::skeleton().join("skeleton.gltf");
-
     let skeleton = skeleton_from_gltf(base_skeleton_path);
-    let generated_code = generate_skeleton_code(&skeleton);
+    let skeleton_code = generate_skeleton_code(&skeleton);
 
     let out_file = out_dir.join("default_skeleton.rs");
-    let mut file = File::create(&out_file).expect("Unable to create skeleton_gen.rs");
-    write!(file, "{}", generated_code).expect("unable to write skeleton code");
+    let skeleton_file = out_dir.join("generated_default_skeleton.rs");
+    let mut file = File::create(&skeleton_file).unwrap();
+    write!(
+        file,
+        "use once_cell::sync::Lazy;
+         use benthic_default_assets::skeleton::{{Skeleton, JointName, Transform, Joint}};\n\
+         use glam::{{Mat4}};\n\
+         use uuid::Uuid;\n\n\
+         pub static DEFAULT_SKELETON: Lazy<Skeleton> = Lazy::new(|| {});\n",
+        skeleton_code
+    )
+    .unwrap();
     println!("cargo:warning=Generating {:?}", out_file);
 
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
 
-    let animation_path = benthic_default_assets::animations();
+    if gen_animations {
+        let animation_path = benthic_default_assets::animations();
 
-    for entry in fs::read_dir(&animation_path).unwrap() {
-        let path = entry.unwrap().path();
+        for entry in fs::read_dir(&animation_path).unwrap() {
+            let path = entry.unwrap().path();
 
-        let animation_name =
-            DefaultAnimationName::from_str(&path.file_stem().unwrap().to_string_lossy()).unwrap();
+            let animation_name =
+                DefaultAnimationName::from_str(&path.file_stem().unwrap().to_string_lossy())
+                    .unwrap();
 
-        let extension = path.extension().and_then(|e| e.to_str());
+            let extension = path.extension().and_then(|e| e.to_str());
 
-        let animation_data = match extension {
-            Some("gltf") | Some("glb") => {
-                let (document, buffers, _) = gltf::import(&path).unwrap();
+            let animation_data = match extension {
+                Some("gltf") | Some("glb") => load_gltf_into_buffers(&path),
+                Some("bvh") => load_bvh_into_buffers(&path),
+                _ => continue,
+            };
 
-                let mut animation_data: HashMap<JointName, JointBuffers> = HashMap::new();
+            let code = generate_animation_module(&animation_data, &skeleton);
 
-                for anim in document.animations() {
-                    for channel in anim.channels() {
-                        let target = channel.target();
-                        let joint_name =
-                            JointName::from_str(target.node().name().unwrap()).unwrap();
-                        let property = target.property();
+            let file_name = format!("{:?}.rs", animation_name);
+            let out_path = out_dir.join(file_name);
 
-                        let reader =
-                            channel.reader(|buffer| buffers.get(buffer.index()).map(|d| &d.0[..]));
+            println!("cargo:warning=Generating {:?}", out_path);
+            std::fs::write(out_path, code).unwrap();
+        }
+    }
+}
 
-                        let times: Vec<f32> = reader.read_inputs().unwrap().collect();
+fn load_gltf_into_buffers(path: &PathBuf) -> HashMap<JointName, JointBuffers> {
+    let (document, buffers, _) = gltf::import(&path).unwrap();
 
-                        let entry = animation_data
-                            .entry(joint_name)
-                            .or_insert_with(JointBuffers::default);
+    let mut animation_data: HashMap<JointName, JointBuffers> = HashMap::new();
 
-                        match property {
-                            gltf::animation::Property::Translation => {
-                                if let Some(gltf::animation::util::ReadOutputs::Translations(t)) =
-                                    reader.read_outputs()
-                                {
-                                    entry.translations.extend(
-                                        times
-                                            .iter()
-                                            .zip(t)
-                                            .map(|(t, v)| (*t, Vec3::from_slice(&v))),
-                                    );
-                                }
-                            }
-                            gltf::animation::Property::Rotation => {
-                                if let Some(gltf::animation::util::ReadOutputs::Rotations(r)) =
-                                    reader.read_outputs()
-                                {
-                                    entry.rotations.extend(
-                                        times
-                                            .iter()
-                                            .zip(r.into_f32())
-                                            .map(|(t, v)| (*t, Quat::from_array(v))),
-                                    );
-                                }
-                            }
-                            gltf::animation::Property::Scale => {
-                                if let Some(gltf::animation::util::ReadOutputs::Scales(s)) =
-                                    reader.read_outputs()
-                                {
-                                    entry.scales.extend(
-                                        times
-                                            .iter()
-                                            .zip(s)
-                                            .map(|(t, v)| (*t, Vec3::from_slice(&v))),
-                                    );
-                                }
-                            }
-                            _ => {}
-                        }
+    for anim in document.animations() {
+        for channel in anim.channels() {
+            let target = channel.target();
+            let joint_name = JointName::from_str(target.node().name().unwrap()).unwrap();
+            let property = target.property();
+
+            let reader = channel.reader(|buffer| buffers.get(buffer.index()).map(|d| &d.0[..]));
+
+            let times: Vec<f32> = reader.read_inputs().unwrap().collect();
+
+            let entry = animation_data
+                .entry(joint_name)
+                .or_insert_with(JointBuffers::default);
+
+            match property {
+                gltf::animation::Property::Translation => {
+                    if let Some(gltf::animation::util::ReadOutputs::Translations(t)) =
+                        reader.read_outputs()
+                    {
+                        entry
+                            .translations
+                            .extend(times.iter().zip(t).map(|(t, v)| (*t, Vec3::from_slice(&v))));
                     }
                 }
-
-                animation_data
+                gltf::animation::Property::Rotation => {
+                    if let Some(gltf::animation::util::ReadOutputs::Rotations(r)) =
+                        reader.read_outputs()
+                    {
+                        entry.rotations.extend(
+                            times
+                                .iter()
+                                .zip(r.into_f32())
+                                .map(|(t, v)| (*t, Quat::from_array(v))),
+                        );
+                    }
+                }
+                gltf::animation::Property::Scale => {
+                    if let Some(gltf::animation::util::ReadOutputs::Scales(s)) =
+                        reader.read_outputs()
+                    {
+                        entry
+                            .scales
+                            .extend(times.iter().zip(s).map(|(t, v)| (*t, Vec3::from_slice(&v))));
+                    }
+                }
+                _ => {}
             }
-
-            Some("bvh") => load_bvh_into_buffers(&path),
-
-            _ => continue,
-        };
-
-        let code = generate_animation_module(&animation_data, &skeleton);
-
-        let file_name = format!("{:?}.rs", animation_name);
-        let out_path = out_dir.join(file_name);
-
-        println!("cargo:warning=Generating {:?}", out_path);
-        std::fs::write(out_path, code).unwrap();
+        }
     }
+
+    animation_data
 }
 
 fn load_bvh_into_buffers(path: &PathBuf) -> HashMap<JointName, JointBuffers> {
@@ -195,12 +201,10 @@ fn generate_animation_module(
 
         let buffers = data.get(joint);
 
-        // === Extract bind pose from skeleton ===
         let bind_transform = joint_data.local_transforms[0].transform;
         let (bind_scale, bind_rotation, bind_translation) =
             bind_transform.to_scale_rotation_translation();
 
-        // === Ensure at least one keyframe per track ===
         let translations = if let Some(b) = buffers {
             if b.translations.is_empty() {
                 vec![(0.0, bind_translation)]
@@ -231,7 +235,6 @@ fn generate_animation_module(
             vec![(0.0, bind_scale)]
         };
 
-        // === Serialize ===
         let translations_str = translations
             .iter()
             .map(|(t, v)| {
@@ -289,8 +292,9 @@ JointAnimation {{
     format!(
         "
 use glam::{{Vec3, Quat}};
-use metaverse_messages::utils::skeleton::JointName;
-use metaverse_messages::utils::default_animations::JointAnimation;
+
+use benthic_default_assets::skeleton::JointName;
+use benthic_default_assets::default_animations::JointAnimation;
 
 pub static JOINTS: &[JointAnimation] = &[
     {}
@@ -314,7 +318,6 @@ pub fn get_joint(joint: JointName) -> Option<&'static JointAnimation> {{
 /// This is used to generate the default keleton from the GLTF file. This allows for creating
 /// skeletons with default transforms without having to reread the file every time an avatar loads
 /// in.
-
 fn skeleton_from_gltf(skeleton_path: PathBuf) -> Skeleton {
     let (document, buffers, _) = gltf::import(&skeleton_path)
         .unwrap_or_else(|_| panic!("Failed to load skeleton {:?}", skeleton_path));
