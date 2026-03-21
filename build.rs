@@ -19,8 +19,7 @@ struct JointBuffers {
 }
 
 fn main() {
-    let gen_animations = std::env::var("CARGO_FEATURE_GENERATE_ANIMATIONS").is_ok();
-
+    let gen_animations = std::env::var("CARGO_FEATURE_ANIMATIONS").is_ok();
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
     let base_skeleton_path = benthic_default_assets::skeleton().join("skeleton.gltf");
     let skeleton = skeleton_from_gltf(base_skeleton_path);
@@ -31,11 +30,7 @@ fn main() {
     let mut file = File::create(&skeleton_file).unwrap();
     write!(
         file,
-        "use once_cell::sync::Lazy;
-         use benthic_default_assets::skeleton::{{Skeleton, JointName, Transform, Joint}};\n\
-         use glam::{{Mat4}};\n\
-         use uuid::Uuid;\n\n\
-         pub static DEFAULT_SKELETON: Lazy<Skeleton> = Lazy::new(|| {});\n",
+        "pub static DEFAULT_SKELETON: once_cell::sync::Lazy<benthic_default_assets::skeleton::Skeleton> = once_cell::sync::Lazy::new(|| {});\n",
         skeleton_code
     )
     .unwrap();
@@ -239,7 +234,7 @@ fn generate_animation_module(
             .iter()
             .map(|(t, v)| {
                 format!(
-                    "({:.8}f32, Vec3::new({:.8}f32, {:.8}f32, {:.8}f32))",
+                    "({:.8}f32, glam::Vec3::new({:.8}f32, {:.8}f32, {:.8}f32))",
                     t, v.x, v.y, v.z
                 )
             })
@@ -250,7 +245,7 @@ fn generate_animation_module(
             .iter()
             .map(|(t, q)| {
                 format!(
-                    "({:.8}f32, Quat::from_xyzw({:.8}f32, {:.8}f32, {:.8}f32, {:.8}f32))",
+                    "({:.8}f32, glam::Quat::from_xyzw({:.8}f32, {:.8}f32, {:.8}f32, {:.8}f32))",
                     t, q.x, q.y, q.z, q.w
                 )
             })
@@ -261,7 +256,7 @@ fn generate_animation_module(
             .iter()
             .map(|(t, v)| {
                 format!(
-                    "({:.8}f32, Vec3::new({:.8}f32, {:.8}f32, {:.8}f32))",
+                    "({:.8}f32, glam::Vec3::new({:.8}f32, {:.8}f32, {:.8}f32))",
                     t, v.x, v.y, v.z
                 )
             })
@@ -270,8 +265,8 @@ fn generate_animation_module(
 
         joints_code.push(format!(
             "
-JointAnimation {{
-    joint: JointName::{:?},
+benthic_default_assets::default_animations::JointAnimation {{
+    joint: benthic_default_assets::skeleton::JointName::{:?},
     translations: &[{}],
     rotations: &[{}],
     scales: &[{}],
@@ -290,13 +285,7 @@ JointAnimation {{
     let index_code = index_array.join(",");
 
     format!(
-        "
-use glam::{{Vec3, Quat}};
-
-use benthic_default_assets::skeleton::JointName;
-use benthic_default_assets::default_animations::JointAnimation;
-
-pub static JOINTS: &[JointAnimation] = &[
+        "pub static JOINTS: &[benthic_default_assets::default_animations::JointAnimation] = &[
     {}
 ];
 
@@ -304,7 +293,7 @@ pub static JOINT_INDEX: &[Option<usize>] = &[
     {}
 ];
 
-pub fn get_joint(joint: JointName) -> Option<&'static JointAnimation> {{
+pub fn get_joint(joint: benthic_default_assets::skeleton::JointName) -> Option<&'static benthic_default_assets::default_animations::JointAnimation> {{
     JOINT_INDEX
         .get(joint as usize)
         .and_then(|opt| opt.map(|i| &JOINTS[i]))
@@ -427,13 +416,13 @@ fn generate_skeleton_code(skeleton: &Skeleton) -> String {
             let children = joint
                 .children
                 .iter()
-                .map(|c| format!("JointName::{:?}", c))
+                .map(|c| format!("benthic_default_assets::skeleton::JointName::{:?}", c))
                 .collect::<Vec<_>>()
                 .join(", ");
 
             let transform = joint.transforms[0].transform.to_cols_array();
             let transform_str = format!(
-                "Mat4::from_cols_array(&[{}])",
+                "glam::Mat4::from_cols_array(&[{}])",
                 transform
                     .iter()
                     .map(|f| format!("{:?}", f))
@@ -443,7 +432,7 @@ fn generate_skeleton_code(skeleton: &Skeleton) -> String {
 
             let local_transform = joint.local_transforms[0].transform.to_cols_array();
             let local_transform_str = format!(
-                "Mat4::from_cols_array(&[{}])",
+                "glam::Mat4::from_cols_array(&[{}])",
                 local_transform
                     .iter()
                     .map(|f| format!("{:?}", f))
@@ -452,28 +441,29 @@ fn generate_skeleton_code(skeleton: &Skeleton) -> String {
             );
 
             format!(
-                "(JointName::{n}, Joint {{
-                name: JointName::{n},
+                "(benthic_default_assets::skeleton::JointName::{n}, benthic_default_assets::skeleton::Joint {{
+                name: benthic_default_assets::skeleton::JointName::{n},
                 parent: {parent},
                 children: vec![{children}],
                 transforms: vec![
-                    Transform{{
+                    benthic_default_assets::skeleton::Transform{{
                         name:\"Default\".to_string(), 
-                        id: Uuid::parse_str(\"{uuid}\").unwrap(), 
+                        id: uuid::Uuid::parse_str(\"{uuid}\").unwrap(), 
                         transform:{transform},
                         rank: 0
                     }}],
                 local_transforms: vec![
-                    Transform{{
+                    benthic_default_assets::skeleton::Transform{{
                         name:\"Default\".to_string(), 
-                        id: Uuid::parse_str(\"{uuid}\").unwrap(), 
+                        id: uuid::Uuid::parse_str(\"{uuid}\").unwrap(), 
                         transform:{local_transform},
                         rank: 0
                     }}],
                 }})",
                 n = format!("{:?}", name),
                 parent = match &joint.parent {
-                    Some(p) => format!("Some(JointName::{:?})", p),
+                    Some(p) =>
+                        format!("Some(benthic_default_assets::skeleton::JointName::{:?})", p),
                     None => "None".to_string(),
                 },
                 children = children,
@@ -486,9 +476,9 @@ fn generate_skeleton_code(skeleton: &Skeleton) -> String {
         .join(",\n");
 
     format!(
-        "Skeleton {{
+        "benthic_default_assets::skeleton::Skeleton {{
             joints: vec![{}].into_iter().collect(),
-            root: vec![JointName::Pelvis],
+            root: vec![benthic_default_assets::skeleton::JointName::Pelvis],
         }}",
         joints_code
     )

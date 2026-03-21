@@ -14,7 +14,7 @@ bvh_anim = "0.4.0"
 bytemuck = "1.25.0"
 
 [features]
-generate_animations = []
+animations = []
 
 [dependencies]
 benthic_default_assets = { path = "../benthic_default_assets/"}
