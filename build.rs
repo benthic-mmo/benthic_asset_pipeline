@@ -25,8 +25,7 @@ fn main() {
     let skeleton = skeleton_from_gltf(base_skeleton_path);
     let skeleton_code = generate_skeleton_code(&skeleton);
 
-    let out_file = out_dir.join("default_skeleton.rs");
-    let skeleton_file = out_dir.join("generated_default_skeleton.rs");
+    let skeleton_file = out_dir.join("default_skeleton.rs");
     let mut file = File::create(&skeleton_file).unwrap();
     write!(
         file,
@@ -34,7 +33,7 @@ fn main() {
         skeleton_code
     )
     .unwrap();
-    println!("cargo:warning=Generating {:?}", out_file);
+    println!("cargo:warning=Generating {:?}", skeleton_file);
 
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
 
