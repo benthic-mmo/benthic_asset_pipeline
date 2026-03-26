@@ -1,4 +1,4 @@
-use benthic_default_assets::default_animations::DefaultAnimationName;
+use benthic_default_assets::default_animations::DefaultAnimation;
 use benthic_default_assets::skeleton::{Joint, JointName, Skeleton, Transform};
 use bvh_anim::ChannelType;
 use glam::Mat4;
@@ -44,8 +44,7 @@ fn main() {
             let path = entry.unwrap().path();
 
             let animation_name =
-                DefaultAnimationName::from_str(&path.file_stem().unwrap().to_string_lossy())
-                    .unwrap();
+                DefaultAnimation::from_str(&path.file_stem().unwrap().to_string_lossy()).unwrap();
 
             let extension = path.extension().and_then(|e| e.to_str());
 
