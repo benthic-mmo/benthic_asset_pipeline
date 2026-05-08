@@ -1,14 +1,42 @@
+#[cfg(feature = "animations")]
+use std::path::PathBuf;
+
+#[cfg(feature = "animations")]
+use strum_macros::Display;
+
+#[cfg(feature = "animations")]
+use strum_macros::EnumString;
+
+#[cfg(feature = "animations")]
+use uuid::Uuid;
+
 pub mod generated {
     include!(concat!(env!("OUT_DIR"), "/default_skeleton.rs"));
 }
-// TODO: rewrite this to use the default animations hashmap provided by the other repo
-// make this a macro that concats all of these includes
-#[cfg(feature = "animations")]
-pub mod animations {
-    pub mod stand {
-        include!(concat!(env!("OUT_DIR"), "/Stand.rs"));
-    }
-    pub mod bow {
-        include!(concat!(env!("OUT_DIR"), "/Bow.rs"));
-    }
+
+macro_rules! define_animations {
+    (
+        $( $name:ident => $uuid:expr ),* $(,)?
+    ) => {
+
+        pub mod animations {
+            $(
+                pub mod $name {
+                    include!(concat!(
+                        env!("OUT_DIR"),
+                        "/",
+                        stringify!($name),
+                        ".rs"
+                    ));
+                }
+            )*
+        }
+        pub fn joints(&self) -> &'static [Joint] {
+            match self {
+                $(
+                    Self::$name => &crate::generated::animations::$name::JOINTS,
+                )*
+            }
+        }
+    };
 }

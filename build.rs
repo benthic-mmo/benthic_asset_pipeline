@@ -1,5 +1,5 @@
-use benthic_default_assets::default_animations::DefaultAnimation;
-use benthic_default_assets::skeleton::{Joint, JointName, Skeleton, Transform};
+use benthic_protocol::default_animations::{DefaultAnimation, JointAnimation, Keyframe};
+use benthic_protocol::skeleton::{Joint, JointName, Skeleton, Transform};
 use bvh_anim::ChannelType;
 use glam::Mat4;
 use glam::{Quat, Vec3};
@@ -11,17 +11,11 @@ use std::{collections::HashMap, env, fs, path::PathBuf, str::FromStr};
 use std::{fs::File, io::Write};
 use uuid::Uuid;
 
-#[derive(Default)]
-struct JointBuffers {
-    translations: Vec<(f32, Vec3)>,
-    rotations: Vec<(f32, Quat)>,
-    scales: Vec<(f32, Vec3)>,
-}
-
 fn main() {
     let gen_animations = std::env::var("CARGO_FEATURE_ANIMATIONS").is_ok();
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
     let base_skeleton_path = benthic_default_assets::skeleton().join("skeleton.gltf");
+    // TODO: stop generating code. just export this as json and write it to disk.
     let skeleton = skeleton_from_gltf(base_skeleton_path);
     let skeleton_code = generate_skeleton_code(&skeleton);
 
@@ -29,7 +23,7 @@ fn main() {
     let mut file = File::create(&skeleton_file).unwrap();
     write!(
         file,
-        "pub static DEFAULT_SKELETON: once_cell::sync::Lazy<benthic_default_assets::skeleton::Skeleton> = once_cell::sync::Lazy::new(|| {});\n",
+        "pub static DEFAULT_SKELETON: once_cell::sync::Lazy<benthic_protocol::skeleton::Skeleton> = once_cell::sync::Lazy::new(|| {});\n",
         skeleton_code
     )
     .unwrap();
@@ -49,31 +43,36 @@ fn main() {
             let extension = path.extension().and_then(|e| e.to_str());
 
             let animation_data = match extension {
-                Some("gltf") | Some("glb") => load_gltf_into_buffers(&path),
-                Some("bvh") => load_bvh_into_buffers(&path),
+                Some("gltf") | Some("glb") => load_gltf_animation(&path),
+                Some("bvh") => load_bvh_animation(&path),
                 _ => continue,
             };
 
-            let code = generate_animation_module(&animation_data, &skeleton);
+            let file_name = format!("{:?}.json", animation_name);
+            let out_path = out_dir.join("Animations");
+            fs::create_dir_all(&out_path).unwrap();
+            let out_path = out_path.join(file_name);
 
-            let file_name = format!("{:?}.rs", animation_name);
-            let out_path = out_dir.join(file_name);
+            let json = serde_json::to_string_pretty(&animation_data)
+                .expect("Failed to serialize animation");
+            fs::write(&out_path, json).unwrap();
 
             println!("cargo:warning=Generating {:?}", out_path);
-            std::fs::write(out_path, code).unwrap();
         }
     }
 }
 
-fn load_gltf_into_buffers(path: &PathBuf) -> HashMap<JointName, JointBuffers> {
-    let (document, buffers, _) = gltf::import(&path).unwrap();
+fn load_gltf_animation(path: &PathBuf) -> Vec<JointAnimation> {
+    let (document, buffers, _) = gltf::import(path).unwrap();
 
-    let mut animation_data: HashMap<JointName, JointBuffers> = HashMap::new();
+    let mut animation_data: HashMap<JointName, JointAnimation> = HashMap::new();
 
     for anim in document.animations() {
         for channel in anim.channels() {
             let target = channel.target();
+
             let joint_name = JointName::from_str(target.node().name().unwrap()).unwrap();
+
             let property = target.property();
 
             let reader = channel.reader(|buffer| buffers.get(buffer.index()).map(|d| &d.0[..]));
@@ -82,7 +81,12 @@ fn load_gltf_into_buffers(path: &PathBuf) -> HashMap<JointName, JointBuffers> {
 
             let entry = animation_data
                 .entry(joint_name)
-                .or_insert_with(JointBuffers::default);
+                .or_insert_with(|| JointAnimation {
+                    joint: joint_name,
+                    translations: Vec::new(),
+                    rotations: Vec::new(),
+                    scales: Vec::new(),
+                });
 
             match property {
                 gltf::animation::Property::Translation => {
@@ -91,47 +95,59 @@ fn load_gltf_into_buffers(path: &PathBuf) -> HashMap<JointName, JointBuffers> {
                     {
                         entry
                             .translations
-                            .extend(times.iter().zip(t).map(|(t, v)| (*t, Vec3::from_slice(&v))));
+                            .extend(times.iter().zip(t).map(|(time, value)| Keyframe {
+                                time: *time,
+                                value: Vec3::from_slice(&value),
+                            }));
                     }
                 }
+
                 gltf::animation::Property::Rotation => {
                     if let Some(gltf::animation::util::ReadOutputs::Rotations(r)) =
                         reader.read_outputs()
                     {
-                        entry.rotations.extend(
-                            times
-                                .iter()
-                                .zip(r.into_f32())
-                                .map(|(t, v)| (*t, Quat::from_array(v))),
-                        );
+                        entry.rotations.extend(times.iter().zip(r.into_f32()).map(
+                            |(time, value)| Keyframe {
+                                time: *time,
+                                value: Quat::from_array(value),
+                            },
+                        ));
                     }
                 }
+
                 gltf::animation::Property::Scale => {
                     if let Some(gltf::animation::util::ReadOutputs::Scales(s)) =
                         reader.read_outputs()
                     {
                         entry
                             .scales
-                            .extend(times.iter().zip(s).map(|(t, v)| (*t, Vec3::from_slice(&v))));
+                            .extend(times.iter().zip(s).map(|(time, value)| Keyframe {
+                                time: *time,
+                                value: Vec3::from_slice(&value),
+                            }));
                     }
                 }
+
                 _ => {}
             }
         }
     }
 
-    animation_data
+    animation_data.into_values().collect()
 }
 
-fn load_bvh_into_buffers(path: &PathBuf) -> HashMap<JointName, JointBuffers> {
+fn load_bvh_animation(path: &PathBuf) -> Vec<JointAnimation> {
     let bvh_file = File::open(path).unwrap();
+
     let bvh = bvh_anim::from_reader(BufReader::new(bvh_file)).unwrap();
-    let mut animation_data: HashMap<JointName, JointBuffers> = HashMap::new();
+
+    let mut animation_data: HashMap<JointName, JointAnimation> = HashMap::new();
 
     let axis_correction = Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2);
 
     for (frame_idx, frame) in bvh.frames().enumerate() {
         let frame_time = bvh.frame_time().as_secs_f32();
+
         let time = frame_idx as f32 * frame_time;
 
         for joint in bvh.joints() {
@@ -146,160 +162,61 @@ fn load_bvh_into_buffers(path: &PathBuf) -> HashMap<JointName, JointBuffers> {
 
             for channel in joint.data().channels() {
                 let value = frame.get(channel).unwrap();
+
                 let radians = value.to_radians();
 
                 match channel.channel_type() {
                     ChannelType::PositionX => translation.x = *value,
+
                     ChannelType::PositionY => translation.y = *value,
+
                     ChannelType::PositionZ => translation.z = *value,
 
                     ChannelType::RotationX => rotation = rotation * Quat::from_rotation_x(radians),
+
                     ChannelType::RotationY => rotation = rotation * Quat::from_rotation_y(radians),
+
                     ChannelType::RotationZ => rotation = rotation * Quat::from_rotation_z(radians),
                 }
             }
 
             let corrected_translation = (axis_correction * translation) * 0.01;
 
-            let entry = animation_data
-                .entry(joint_name)
-                .or_insert_with(JointBuffers::default);
-
-            if joint_name == JointName::Pelvis {
-                entry.translations.push((time, corrected_translation));
-            }
-
             let corrected_rotation = match joint_name {
                 JointName::Pelvis => rotation,
+
                 _ => axis_correction * rotation * axis_correction.inverse(),
             };
 
-            entry.rotations.push((time, corrected_rotation));
-            entry.scales.push((time, Vec3::ONE));
+            let entry = animation_data
+                .entry(joint_name)
+                .or_insert_with(|| JointAnimation {
+                    joint: joint_name,
+                    translations: Vec::new(),
+                    rotations: Vec::new(),
+                    scales: Vec::new(),
+                });
+
+            if joint_name == JointName::Pelvis {
+                entry.translations.push(Keyframe {
+                    time,
+                    value: corrected_translation,
+                });
+            }
+
+            entry.rotations.push(Keyframe {
+                time,
+                value: corrected_rotation,
+            });
+
+            entry.scales.push(Keyframe {
+                time,
+                value: Vec3::ONE,
+            });
         }
     }
 
-    animation_data
-}
-
-fn generate_animation_module(
-    data: &HashMap<JointName, JointBuffers>,
-    skeleton: &Skeleton,
-) -> String {
-    let mut joints_code = Vec::new();
-    let mut index_map: HashMap<usize, usize> = HashMap::new();
-
-    for (i, (joint, joint_data)) in skeleton.joints.iter().enumerate() {
-        index_map.insert(*joint as usize, i);
-
-        let buffers = data.get(joint);
-
-        let bind_transform = joint_data.local_transforms[0].transform;
-        let (bind_scale, bind_rotation, bind_translation) =
-            bind_transform.to_scale_rotation_translation();
-
-        let translations = if let Some(b) = buffers {
-            if b.translations.is_empty() {
-                vec![(0.0, bind_translation)]
-            } else {
-                b.translations.clone()
-            }
-        } else {
-            vec![(0.0, bind_translation)]
-        };
-
-        let rotations = if let Some(b) = buffers {
-            if b.rotations.is_empty() {
-                vec![(0.0, bind_rotation)]
-            } else {
-                b.rotations.clone()
-            }
-        } else {
-            vec![(0.0, bind_rotation)]
-        };
-
-        let scales = if let Some(b) = buffers {
-            if b.scales.is_empty() {
-                vec![(0.0, bind_scale)]
-            } else {
-                b.scales.clone()
-            }
-        } else {
-            vec![(0.0, bind_scale)]
-        };
-
-        let translations_str = translations
-            .iter()
-            .map(|(t, v)| {
-                format!(
-                    "({:.8}f32, glam::Vec3::new({:.8}f32, {:.8}f32, {:.8}f32))",
-                    t, v.x, v.y, v.z
-                )
-            })
-            .collect::<Vec<_>>()
-            .join(",");
-
-        let rotations_str = rotations
-            .iter()
-            .map(|(t, q)| {
-                format!(
-                    "({:.8}f32, glam::Quat::from_xyzw({:.8}f32, {:.8}f32, {:.8}f32, {:.8}f32))",
-                    t, q.x, q.y, q.z, q.w
-                )
-            })
-            .collect::<Vec<_>>()
-            .join(",");
-
-        let scales_str = scales
-            .iter()
-            .map(|(t, v)| {
-                format!(
-                    "({:.8}f32, glam::Vec3::new({:.8}f32, {:.8}f32, {:.8}f32))",
-                    t, v.x, v.y, v.z
-                )
-            })
-            .collect::<Vec<_>>()
-            .join(",");
-
-        joints_code.push(format!(
-            "
-benthic_default_assets::default_animations::JointAnimation {{
-    joint: benthic_default_assets::skeleton::JointName::{:?},
-    translations: &[{}],
-    rotations: &[{}],
-    scales: &[{}],
-}}",
-            joint, translations_str, rotations_str, scales_str
-        ));
-    }
-
-    let max_joint = index_map.keys().copied().max().unwrap_or(0);
-    let mut index_array = vec!["None".to_string(); max_joint + 1];
-
-    for (joint_idx, joint_pos) in index_map {
-        index_array[joint_idx] = format!("Some({})", joint_pos);
-    }
-
-    let index_code = index_array.join(",");
-
-    format!(
-        "pub static JOINTS: &[benthic_default_assets::default_animations::JointAnimation] = &[
-    {}
-];
-
-pub static JOINT_INDEX: &[Option<usize>] = &[
-    {}
-];
-
-pub fn get_joint(joint: benthic_default_assets::skeleton::JointName) -> Option<&'static benthic_default_assets::default_animations::JointAnimation> {{
-    JOINT_INDEX
-        .get(joint as usize)
-        .and_then(|opt| opt.map(|i| &JOINTS[i]))
-}}
-",
-        joints_code.join(","),
-        index_code
-    )
+    animation_data.into_values().collect()
 }
 
 /// This is used to generate the default keleton from the GLTF file. This allows for creating
@@ -414,7 +331,7 @@ fn generate_skeleton_code(skeleton: &Skeleton) -> String {
             let children = joint
                 .children
                 .iter()
-                .map(|c| format!("benthic_default_assets::skeleton::JointName::{:?}", c))
+                .map(|c| format!("benthic_protocol::skeleton::JointName::{:?}", c))
                 .collect::<Vec<_>>()
                 .join(", ");
 
@@ -439,19 +356,19 @@ fn generate_skeleton_code(skeleton: &Skeleton) -> String {
             );
 
             format!(
-                "(benthic_default_assets::skeleton::JointName::{n}, benthic_default_assets::skeleton::Joint {{
-                name: benthic_default_assets::skeleton::JointName::{n},
+                "(benthic_protocol::skeleton::JointName::{n}, benthic_protocol::skeleton::Joint {{
+                name: benthic_protocol::skeleton::JointName::{n},
                 parent: {parent},
                 children: vec![{children}],
                 transforms: vec![
-                    benthic_default_assets::skeleton::Transform{{
+                    benthic_protocol::skeleton::Transform{{
                         name:\"Default\".to_string(), 
                         id: uuid::Uuid::parse_str(\"{uuid}\").unwrap(), 
                         transform:{transform},
                         rank: 0
                     }}],
                 local_transforms: vec![
-                    benthic_default_assets::skeleton::Transform{{
+                    benthic_protocol::skeleton::Transform{{
                         name:\"Default\".to_string(), 
                         id: uuid::Uuid::parse_str(\"{uuid}\").unwrap(), 
                         transform:{local_transform},
@@ -460,8 +377,7 @@ fn generate_skeleton_code(skeleton: &Skeleton) -> String {
                 }})",
                 n = format!("{:?}", name),
                 parent = match &joint.parent {
-                    Some(p) =>
-                        format!("Some(benthic_default_assets::skeleton::JointName::{:?})", p),
+                    Some(p) => format!("Some(benthic_protocol::skeleton::JointName::{:?})", p),
                     None => "None".to_string(),
                 },
                 children = children,
@@ -474,9 +390,9 @@ fn generate_skeleton_code(skeleton: &Skeleton) -> String {
         .join(",\n");
 
     format!(
-        "benthic_default_assets::skeleton::Skeleton {{
+        "benthic_protocol::skeleton::Skeleton {{
             joints: vec![{}].into_iter().collect(),
-            root: vec![benthic_default_assets::skeleton::JointName::Pelvis],
+            root: vec![benthic_protocol::skeleton::JointName::Pelvis],
         }}",
         joints_code
     )
