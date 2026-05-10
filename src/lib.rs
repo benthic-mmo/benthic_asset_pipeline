@@ -1,4 +1,3 @@
-#[cfg(feature = "animations")]
 use std::path::PathBuf;
 
 #[cfg(feature = "animations")]
@@ -14,6 +13,10 @@ pub mod generated {
     include!(concat!(env!("OUT_DIR"), "/default_skeleton.rs"));
 }
 
+pub fn generated_asset_path() -> PathBuf {
+    PathBuf::from(env!("OUT_DIR"))
+}
+
 macro_rules! define_animations {
     (
         $( $name:ident => $uuid:expr ),* $(,)?
@@ -26,7 +29,7 @@ macro_rules! define_animations {
                         env!("OUT_DIR"),
                         "/",
                         stringify!($name),
-                        ".rs"
+                        ".json"
                     ));
                 }
             )*
